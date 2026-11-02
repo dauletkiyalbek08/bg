@@ -8,13 +8,16 @@ import {
   type ReactNode,
 } from "react";
 import { motion, MotionConfig } from "motion/react";
-import {
-  RadarChart,
-  Radar,
-  PolarGrid,
-  PolarAngleAxis,
-  ResponsiveContainer,
-} from "recharts";
+import dynamic from "next/dynamic";
+import { apiRequest as request, ApiError } from "@/lib/api-client";
+const Chart = dynamic(() => import("./profile-chart"), {
+  ssr: false,
+  loading: () => (
+    <div className="chart-loading" role="status">
+      Диаграмма жүктелуде…
+    </div>
+  ),
+});
 import {
   Compass,
   ArrowUpRight,
@@ -169,16 +172,7 @@ const answers = [
   "Дәл мен туралы",
 ];
 const date = formatDate;
-async function request(path: string, body?: unknown) {
-  const response = await fetch("/api/" + path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Сұрау орындалмады");
-  return data;
-}
+
 function Btn({
   children,
   onClick,
@@ -316,26 +310,43 @@ function useTheme() {
       window.addEventListener("bagdar-theme", cb);
       return () => window.removeEventListener("bagdar-theme", cb);
     },
-    () => localStorage.getItem("bagdar-theme") || "system",
+    () => {
+      try {
+        return localStorage.getItem("bagdar-theme") || "system";
+      } catch {
+        return "system";
+      }
+    },
     () => "system",
   );
   return [
     theme,
     (value: string) => {
-      localStorage.setItem("bagdar-theme", value);
+      try {
+        localStorage.setItem("bagdar-theme", value);
+      } catch {
+        /* Storage can be disabled in private browsers. */
+      }
       window.dispatchEvent(new Event("bagdar-theme"));
     },
   ] as const;
 }
-export default function Platform({ demoAllowed }: { demoAllowed: boolean }) {
+export default function Platform({
+  demoAllowed,
+  hasSession,
+}: {
+  demoAllowed: boolean;
+  hasSession: boolean;
+}) {
   const [theme, setTheme] = useTheme();
   const [snapshot, setState] = useState<State | null>(null),
-    [loading, setLoading] = useState(true),
+    [loading, setLoading] = useState(hasSession),
     [error, setError] = useState(""),
     [toast, setToast] = useState(""),
     [view, setView] = useState<View>("home"),
     [menu, setMenu] = useState(false),
     [busy, setBusy] = useState(false),
+    [loginStage, setLoginStage] = useState(""),
     [modal, setModal] = useState<ReactNode>(null),
     [career, setCareer] = useState<Career | null>(null),
     [selectedAttempt, setSelectedAttempt] = useState(""),
@@ -344,19 +355,32 @@ export default function Platform({ demoAllowed }: { demoAllowed: boolean }) {
     [credentials, setCredentials] = useState<
       { login: string; password: string }[] | null
     >(null);
-  async function reload() {
-    const data = await request("state");
+  const initialRequest = useRef<AbortController | null>(null);
+  async function reload(timeoutMs?: number) {
+    const data = await request("state", undefined, { timeoutMs });
     setState(data);
     return data as State;
   }
   useEffect(() => {
-    request("state")
-      .then(setState)
-      .catch((e) => {
-        if (e.message !== "Жүйеге кіріңіз") setError(e.message);
+    if (!hasSession) return;
+    const controller = new AbortController();
+    initialRequest.current = controller;
+    request("state", undefined, { signal: controller.signal })
+      .then((data) => {
+        if (!controller.signal.aborted) setState(data);
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .catch((e) => {
+        if (
+          !controller.signal.aborted &&
+          !(e instanceof ApiError && e.status === 401)
+        )
+          setError(e.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [hasSession]);
   useEffect(() => {
     const mq = matchMedia("(prefers-color-scheme: dark)");
     const apply = () =>
@@ -364,7 +388,6 @@ export default function Platform({ demoAllowed }: { demoAllowed: boolean }) {
         theme === "system" ? (mq.matches ? "dark" : "light") : theme);
     apply();
     mq.addEventListener("change", apply);
-    localStorage.setItem("bagdar-theme", theme);
     return () => mq.removeEventListener("change", apply);
   }, [theme]);
   useEffect(() => {
@@ -441,23 +464,42 @@ export default function Platform({ demoAllowed }: { demoAllowed: boolean }) {
       <div className="loading-screen">
         <Logo />
         <div className="loader" />
-        <p>Бағытыңды дайындап жатырмыз…</p>
+        <p>Кабинетіңді жүктеп жатырмыз…</p>
+        <Btn
+          secondary
+          onClick={() => {
+            initialRequest.current?.abort();
+            setLoading(false);
+          }}
+        >
+          Кіру бетіне оралу
+        </Btn>
       </div>
     );
   if (!snapshot)
     return (
       <Login
         demoAllowed={demoAllowed}
+        loginStage={loginStage}
         onLogin={async (body) => {
           setBusy(true);
           setError("");
+          setLoginStage("Кіру тексерілуде…");
+          let signedIn = false;
           try {
             await request("login", body);
-            await reload();
+            signedIn = true;
+            setLoginStage("Кабинет ашылуда…");
+            await reload(10000);
           } catch (e) {
-            setError((e as Error).message);
+            setError(
+              e instanceof ApiError && e.status === 401 && signedIn
+                ? "Кіру сеансы расталмады. Бетті жаңартып, қайта кіріңіз."
+                : (e as Error).message,
+            );
           } finally {
             setBusy(false);
+            setLoginStage("");
           }
         }}
         error={error}
@@ -2412,13 +2454,23 @@ function Login({
   error,
   busy,
   demoAllowed = true,
+  loginStage,
 }: {
   onLogin: (body: Record<string, unknown>) => Promise<void>;
   error: string;
   busy: boolean;
   demoAllowed?: boolean;
+  loginStage: string;
 }) {
   const [show, setShow] = useState(false);
+  const [pendingRole, setPendingRole] = useState("");
+  const errorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error) {
+      errorRef.current?.focus({ preventScroll: true });
+      errorRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [error]);
   return (
     <div className="login-page">
       <section className="login-story">
@@ -2512,14 +2564,24 @@ function Login({
               Құпиясөзді ұмыттың ба? Мектептегі жауапты маманға хабарлас.
             </p>
             {error && (
-              <div role="alert" className="notice error">
+              <div
+                ref={errorRef}
+                tabIndex={-1}
+                role="alert"
+                className="notice error"
+              >
                 {error}
               </div>
             )}
             <Btn type="submit" disabled={busy}>
-              Кіру
+              {busy ? "Кіруде…" : "Кіру"}
               <ArrowRight size={19} />
             </Btn>
+            {busy && (
+              <p className="login-progress" role="status">
+                {loginStage}
+              </p>
+            )}
           </form>
           <p className="login-register">
             <LockKeyhole size={14} /> Аккаунтты мектептің жауапты маманы береді.
@@ -2542,10 +2604,17 @@ function Login({
                     <button
                       key={String(login)}
                       disabled={busy}
-                      onClick={() => void onLogin({ login, demo: true })}
+                      onClick={() => {
+                        setPendingRole(String(login));
+                        void onLogin({ login, demo: true });
+                      }}
                     >
                       <I size={19} />
-                      <span>{String(label)}</span>
+                      <span>
+                        {busy && pendingRole === login
+                          ? "Кабинет ашылуда…"
+                          : String(label)}
+                      </span>
                       <ArrowUpRight size={15} />
                     </button>
                   );
@@ -2975,60 +3044,7 @@ function TestArea({
     </section>
   );
 }
-function Chart({
-  scores,
-  family,
-}: {
-  scores: Record<string, number>;
-  family: "riasec" | "klimov";
-}) {
-  const data = scales[family].map((key) => ({
-    name: labels[key],
-    value: Math.round(scores[key]),
-    max: 100,
-  }));
-  return (
-    <>
-      <div className="radar-wrap">
-        <ResponsiveContainer width="100%" height={280}>
-          <RadarChart data={data} outerRadius="65%">
-            <PolarGrid stroke="var(--border)" />
-            <PolarAngleAxis
-              dataKey="name"
-              tick={{ fontSize: 10, fill: "var(--muted)" }}
-            />
-            <Radar
-              name="Қызығушылықтар"
-              dataKey="max"
-              stroke="transparent"
-              fill="transparent"
-            />
-            <Radar
-              name="Сенің жауаптарың"
-              dataKey="value"
-              stroke="#6C3BFF"
-              fill="#6C3BFF"
-              fillOpacity={0.2}
-              strokeWidth={2.5}
-              isAnimationActive={false}
-            />
-          </RadarChart>
-        </ResponsiveContainer>
-      </div>
-      <details className="chart-details">
-        <summary>Сандармен көру</summary>
-        <dl>
-          {data.map((d) => (
-            <div key={d.name}>
-              <dt>{d.name}</dt>
-              <dd>{d.value} / 100</dd>
-            </div>
-          ))}
-        </dl>
-      </details>
-    </>
-  );
-}
+
 function ResultView({
   attempt,
   state,

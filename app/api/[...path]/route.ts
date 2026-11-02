@@ -6,6 +6,7 @@ import { z } from "zod";
 import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
 import { transaction, demoEnabled, isSupabase, isNetlify } from "@/lib/store";
+import { isTrustedOrigin } from "@/lib/origin";
 import { ensureSeed } from "@/lib/seed";
 import {
   currentUser,
@@ -21,9 +22,6 @@ import {
   writable,
 } from "@/lib/service";
 import { materialStore } from "@/lib/netlify-store";
-import { makePDF } from "@/lib/pdf";
-import ExcelJS from "exceljs";
-import { readImport } from "@/lib/import";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const rates = new Map<string, { count: number; reset: number }>();
@@ -43,14 +41,16 @@ function json(data: unknown, status = 200) {
 }
 async function handler(req: NextRequest) {
   try {
-    await ensureSeed();
     const path = req.nextUrl.pathname.slice(5);
     if (req.method === "POST") {
-      const origin = req.headers.get("origin");
-      const expectedOrigin =
-        process.env.BAGDAR_APP_ORIGIN ||
-        `${req.nextUrl.protocol}//${req.headers.get("host")}`;
-      if (!origin || origin !== expectedOrigin)
+      if (
+        !isTrustedOrigin(
+          req.headers.get("origin"),
+          req.headers.get("host"),
+          process.env.BAGDAR_APP_ORIGIN,
+          process.env.NODE_ENV !== "production",
+        )
+      )
         throw new HttpError("Сұрау көзіне рұқсат жоқ", 403);
       if (
         Number(req.headers.get("content-length") || 0) >
@@ -58,6 +58,9 @@ async function handler(req: NextRequest) {
       )
         throw new HttpError("Файл тым үлкен", 413);
     }
+    if (path !== "login" && !req.cookies.has("bagdar_session"))
+      throw new HttpError("Жүйеге кіріңіз", 401);
+    await ensureSeed();
     if (path === "login" && req.method === "POST") {
       const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "local";
       rate("login:" + ip, demoEnabled() ? 120 : 12);
@@ -278,6 +281,7 @@ async function handler(req: NextRequest) {
         if (!attempt?.result) throw new HttpError("Нәтиже табылмады", 404);
         const student = await studentAccess(s, u, attempt.owner);
         const org = await s.get("organizations", attempt.org);
+        const { makePDF } = await import("@/lib/pdf");
         const bytes = await makePDF(student, attempt.result, org?.name || "");
         return new NextResponse(new Uint8Array(bytes), {
           headers: {
@@ -313,6 +317,7 @@ async function handler(req: NextRequest) {
               Әдістеме: a?.result?.methodology || "—",
             };
           });
+        const { default: ExcelJS } = await import("exceljs");
         const workbook = new ExcelJS.Workbook();
         const sheet = workbook.addWorksheet("Нәтижелер");
         if (rows.length) {
@@ -345,6 +350,7 @@ async function handler(req: NextRequest) {
           throw new HttpError("CSV немесе XLSX файлын таңдаңыз (5 МБ дейін)");
         let input: Record<string, string>[];
         try {
+          const { readImport } = await import("@/lib/import");
           input = await readImport(file);
         } catch {
           throw new HttpError(
@@ -394,6 +400,14 @@ async function handler(req: NextRequest) {
       throw new HttpError("Бет табылмады", 404);
     });
   } catch (e) {
+    if (e instanceof Error && ["TimeoutError", "AbortError"].includes(e.name))
+      return json(
+        {
+          error:
+            "Сервер деректерді уақытында жүктей алмады. Біраздан соң қайта көріңіз.",
+        },
+        503,
+      );
     if (e instanceof z.ZodError)
       return json(
         {

@@ -1,4 +1,6 @@
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
+import { isSupabase, isNetlify, demoEnabled } from "./runtime";
+export { isSupabase, isNetlify, demoEnabled } from "./runtime";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
@@ -21,14 +23,6 @@ type Write = {
   expected: number;
 };
 const globals = globalThis as unknown as { bagdarDb?: DatabaseSync };
-const backend = () =>
-  process.env.BAGDAR_BACKEND || process.env.BAGDAR_DEFAULT_BACKEND || "sqlite";
-export const isSupabase = () => backend() === "supabase";
-export const isNetlify = () => backend() === "netlify";
-export const demoEnabled = () =>
-  !isSupabase() &&
-  ((process.env.BAGDAR_MODE || process.env.BAGDAR_DEFAULT_MODE) === "demo" ||
-    process.env.NODE_ENV !== "production");
 export function adminClient(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL,
     key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -47,6 +41,10 @@ function db() {
       throw new Error("Жұмыс режимінде Supabase қосылуы қажет");
     const dir = process.env.BAGDAR_DATA_DIR || join(process.cwd(), ".data");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const sqlite = process.getBuiltinModule("node:sqlite") as
+      typeof import("node:sqlite") | undefined;
+    if (!sqlite) throw new Error("SQLite үшін Node.js 24 орнатыңыз");
+    const { DatabaseSync } = sqlite;
     const d = new DatabaseSync(join(dir, "bagdar.sqlite"));
     d.exec(
       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(kind,id));",

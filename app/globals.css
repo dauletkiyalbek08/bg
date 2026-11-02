@@ -3141,3 +3141,18 @@ dd {
 .error-toast svg {
   color: #ffd7df;
 }
+.chart-loading {
+  height: 280px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.login-progress {
+  color: var(--purple);
+  font-size: 11px;
+  margin: 0;
+}
+.demo-roles button:disabled {
+  cursor: progress;
+}

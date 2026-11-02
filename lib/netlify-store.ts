@@ -16,10 +16,27 @@ export interface NetlifySnapshot {
   rows: Record<string, NetlifyRow>;
   etag?: string;
 }
+const boundedFetch: typeof fetch = (input, options) => {
+  const original =
+    options?.signal || (input instanceof Request ? input.signal : undefined);
+  const deadline = AbortSignal.timeout(10000);
+  return fetch(input, {
+    ...options,
+    signal: original ? AbortSignal.any([original, deadline]) : deadline,
+  });
+};
 const records = () =>
-  getStore({ name: "bagdar-demo-v1", consistency: "strong" });
+  getStore({
+    name: "bagdar-demo-v1",
+    consistency: "strong",
+    fetch: boundedFetch,
+  });
 export const materialStore = () =>
-  getStore({ name: "bagdar-demo-materials-v1", consistency: "strong" });
+  getStore({
+    name: "bagdar-demo-materials-v1",
+    consistency: "strong",
+    fetch: boundedFetch,
+  });
 export async function readNetlifySnapshot(): Promise<NetlifySnapshot> {
   const saved = await records().getWithMetadata("database", {
     type: "json",
