@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "24.19.0"
+  NETLIFY = "true"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[functions]
+  included_files = ["public/fonts/Report.ttf"]
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
