@@ -16,7 +16,8 @@
     "seed": "node --import tsx scripts/seed.ts",
     "format": "prettier --write .",
     "seed:bootstrap": "node --import tsx scripts/seed.ts --bootstrap",
-    "test:netlify": "vitest run --config vitest.netlify.config.ts"
+    "test:netlify": "vitest run --config vitest.netlify.config.ts",
+    "local": "node scripts/local.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "11.1.7",
